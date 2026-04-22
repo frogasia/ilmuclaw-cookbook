@@ -16,6 +16,50 @@ Expected final line:
 all assertions passed
 ```
 
+## Inspecting the resulting config
+
+The container's `~/.openclaw` is bind-mounted to `test/.state/` on your host, so the config is readable without entering the container:
+
+```sh
+cat test/.state/openclaw.json
+ls  test/.state/workspace/skills/
+```
+
+Or drop into a shell in the container with the same state mounted:
+
+```sh
+make shell
+# inside:
+openclaw config get tools.allow
+openclaw mcp show deepwiki
+```
+
+### Connecting to a live gateway from the host
+
+The container's gateway port (`18789`) is published to the host at `28789` — chosen to avoid colliding with a real local OpenClaw gateway on `18789`.
+
+```sh
+make shell
+# inside the container:
+openclaw gateway                        # starts the WS gateway in the container
+# from the host, in another terminal:
+wscat -c ws://127.0.0.1:28789           # raw WebSocket
+# or:
+openclaw tui --gateway ws://127.0.0.1:28789
+```
+
+If `28789` is also taken on your host:
+
+```sh
+COOKBOOK_HOST_GATEWAY_PORT=38789 make shell
+```
+
+Reset state between runs:
+
+```sh
+make clean-state
+```
+
 ## What it does
 
 1. Spins up the OpenClaw container with a fresh, ephemeral `~/.openclaw` volume.

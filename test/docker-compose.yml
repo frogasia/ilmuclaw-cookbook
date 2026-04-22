@@ -1,14 +1,28 @@
 # End-to-end test harness for install.sh.
 #
-# Spins up an OpenClaw container with an ephemeral config volume, runs the
-# install script twice (idempotency check), then asserts that the expected
-# state landed in openclaw.json and on disk.
+# Spins up an OpenClaw container, runs the install script twice (idempotency
+# check), then asserts that the expected state landed in openclaw.json and
+# on disk.
 #
-# Usage:
-#   docker compose -f test/docker-compose.yml run --rm cookbook-test
+# Two ways to inspect after a run:
 #
-# The host's ~/.openclaw is never touched — the volume below is per-run and
-# named so Compose cleans it up when the service exits with --rm.
+#   1. Files — the container's ~/.openclaw is bind-mounted to test/.state/
+#      on the host:
+#          cat test/.state/openclaw.json
+#          ls  test/.state/workspace/skills/
+#
+#   2. Live gateway — start a shell service with the gateway running and
+#      its port mapped to the host. The host port defaults to 28789 to
+#      avoid colliding with a real local OpenClaw gateway on 18789:
+#          make shell   # inside: openclaw gateway
+#          # from host: openclaw tui --gateway ws://127.0.0.1:28789
+#          # or browser / wscat against ws://127.0.0.1:28789
+#
+# Override the host-side port if 28789 is also taken:
+#      COOKBOOK_HOST_GATEWAY_PORT=38789 make test-e2e
+#
+# The host's real ~/.openclaw is never touched — test/.state/ is a dedicated,
+# gitignored directory just for this harness.
 
 services:
   cookbook-test:
@@ -19,8 +33,23 @@ services:
       - COOKBOOK_REF=${COOKBOOK_REF:-main}
     volumes:
       - ../:/work:ro
-      - openclaw-home:/root/.openclaw
+      - ./.state:/root/.openclaw
+    ports:
+      - "${COOKBOOK_HOST_GATEWAY_PORT:-28789}:18789"
     entrypoint: ["/bin/bash", "/work/test/e2e-run.sh"]
 
-volumes:
-  openclaw-home:
+  # Interactive shell with the same state mounted and the gateway port
+  # published — for `make shell` to poke around after (or before) a test run.
+  shell:
+    image: ${COOKBOOK_TEST_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    working_dir: /root
+    environment:
+      - NO_COLOR=1
+    volumes:
+      - ../:/work:ro
+      - ./.state:/root/.openclaw
+    ports:
+      - "${COOKBOOK_HOST_GATEWAY_PORT:-28789}:18789"
+    entrypoint: ["/bin/bash"]
+    stdin_open: true
+    tty: true

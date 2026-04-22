@@ -4,3 +4,6 @@
 *~
 .idea/
 .vscode/
+
+# Docker-compose test harness state (bind-mounted ~/.openclaw inside the container)
+test/.state/

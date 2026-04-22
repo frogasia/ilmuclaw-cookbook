@@ -1,4 +1,4 @@
-.PHONY: help lint test test-help test-errors test-e2e
+.PHONY: help lint test test-help test-errors test-e2e shell clean-state
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -16,13 +16,11 @@ test-help: ## Verify --help renders and exits 0
 test-errors: ## Exercise each preflight failure and check its exit code
 	@bash test/errors.sh
 
-test-e2e: ## End-to-end against a containerised OpenClaw (requires openclaw image)
-	@if [ -z "$${COOKBOOK_TEST_IMAGE:-}" ]; then \
-		echo ""; \
-		echo "Note: this target pulls \`openclaw/openclaw:latest\` by default."; \
-		echo "If the public image is not yet available, point at a local build:"; \
-		echo ""; \
-		echo "    COOKBOOK_TEST_IMAGE=<local-tag> make test-e2e"; \
-		echo ""; \
-	fi
+test-e2e: ## End-to-end against a containerised OpenClaw (state persists in test/.state/)
 	docker compose -f test/docker-compose.yml run --rm cookbook-test
+
+shell: ## Drop into a shell in the test container with the same state mounted
+	docker compose -f test/docker-compose.yml run --rm shell
+
+clean-state: ## Remove the test harness state directory (test/.state/)
+	rm -rf test/.state
