@@ -38,20 +38,22 @@ openclaw mcp show deepwiki
 
 The container's gateway port (`18789`) is published to the host at `28789` — chosen to avoid colliding with a real local OpenClaw gateway on `18789`.
 
+The quickest way: **`make run`**. It applies the cookbook config, then keeps the gateway running in the foreground with the port already mapped. From another terminal on the host:
+
 ```sh
-make shell
-# inside the container:
-openclaw gateway                        # starts the WS gateway in the container
-# from the host, in another terminal:
-wscat -c ws://127.0.0.1:28789           # raw WebSocket
-# or:
 openclaw tui --gateway ws://127.0.0.1:28789
+# or:
+wscat -c ws://127.0.0.1:28789
 ```
+
+Ctrl-C in the `make run` terminal stops the gateway and tears the container down.
+
+For hand-driven inspection without the gateway running, use `make shell` and drive things yourself inside the container.
 
 If `28789` is also taken on your host:
 
 ```sh
-COOKBOOK_HOST_GATEWAY_PORT=38789 make shell
+COOKBOOK_HOST_GATEWAY_PORT=38789 make run
 ```
 
 Reset state between runs:
