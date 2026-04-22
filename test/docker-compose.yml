@@ -1,0 +1,88 @@
+# End-to-end test harness for install.sh.
+#
+# Spins up an OpenClaw container, runs the install script twice (idempotency
+# check), then asserts that the expected state landed in openclaw.json and
+# on disk.
+#
+# Two ways to inspect after a run:
+#
+#   1. Files — the container's ~/.openclaw is bind-mounted to test/.state/
+#      on the host:
+#          cat test/.state/openclaw.json
+#          ls  test/.state/workspace/skills/
+#
+#   2. Live gateway — start a shell service with the gateway running and
+#      its port mapped to the host. The host port defaults to 28789 to
+#      avoid colliding with a real local OpenClaw gateway on 18789:
+#          make shell   # inside: openclaw gateway
+#          # from host: openclaw tui --gateway ws://127.0.0.1:28789
+#          # or browser / wscat against ws://127.0.0.1:28789
+#
+# Override the host-side port if 28789 is also taken:
+#      COOKBOOK_HOST_GATEWAY_PORT=38789 make test-e2e
+#
+# The host's real ~/.openclaw is never touched — test/.state/ is a dedicated,
+# gitignored directory just for this harness.
+
+services:
+  cookbook-test:
+    image: ${COOKBOOK_TEST_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    working_dir: /work
+    environment:
+      - NO_COLOR=1
+      - COOKBOOK_REF=${COOKBOOK_REF:-main}
+    volumes:
+      - ../:/work:ro
+      - ./.state:/root/.openclaw
+    ports:
+      - "${COOKBOOK_HOST_GATEWAY_PORT:-28789}:18789"
+    entrypoint: ["/bin/bash", "/work/test/e2e-run.sh"]
+
+  # Applies cookbook config and then keeps the gateway running in the
+  # foreground — for interactive verification. Use via `make run`.
+  # Ctrl-C stops the gateway and tears down the container.
+  run:
+    image: ${COOKBOOK_TEST_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    working_dir: /work
+    environment:
+      - NO_COLOR=1
+      - COOKBOOK_REF=${COOKBOOK_REF:-main}
+      - COOKBOOK_ACCEPT_RISK=1
+      - COOKBOOK_BASE_URL=file:///work
+    volumes:
+      - ../:/work:ro
+      - ./.state:/root/.openclaw
+    ports:
+      - "${COOKBOOK_HOST_GATEWAY_PORT:-28789}:18789"
+    entrypoint: ["/bin/bash", "-c"]
+    # --bind lan binds the gateway to all interfaces inside the container
+    # so Docker's port forwarding reaches it from the host. --allow-unconfigured
+    # skips the gateway.mode=local guard since our test config doesn't set it.
+    command: |
+      /work/install.sh
+      echo ""
+      echo "=== gateway ready — connect from host ==="
+      echo "    openclaw tui --gateway ws://127.0.0.1:${COOKBOOK_HOST_GATEWAY_PORT:-28789}"
+      echo "    wscat -c ws://127.0.0.1:${COOKBOOK_HOST_GATEWAY_PORT:-28789}"
+      echo ""
+      echo "Ctrl-C stops the gateway."
+      echo ""
+      exec openclaw gateway --port 18789 --bind lan --allow-unconfigured
+    stdin_open: true
+    tty: true
+
+  # Interactive shell with the same state mounted and the gateway port
+  # published — for `make shell` to poke around by hand.
+  shell:
+    image: ${COOKBOOK_TEST_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    working_dir: /root
+    environment:
+      - NO_COLOR=1
+    volumes:
+      - ../:/work:ro
+      - ./.state:/root/.openclaw
+    ports:
+      - "${COOKBOOK_HOST_GATEWAY_PORT:-28789}:18789"
+    entrypoint: ["/bin/bash"]
+    stdin_open: true
+    tty: true
