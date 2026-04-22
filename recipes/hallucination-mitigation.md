@@ -26,10 +26,9 @@ default fallback.
 
 ## Snippet
 
-Paste this into `~/.openclaw/workspace/AGENTS.md`. OpenClaw reads
-`AGENTS.md` into every session's system prompt on startup (workspace
-bootstrap injection), and into sub-agent sessions too, so the rule
-propagates to delegated work.
+**To apply.** Check whether `~/.openclaw/workspace/AGENTS.md` already
+contains a `## Grounding discipline` section. If it's missing, add the
+block below. If it's already there, nothing to do.
 
 ```markdown
 ## Grounding discipline
@@ -69,11 +68,17 @@ right move is a short tool call — read the file, search the docs,
 ask the user — not a confident guess.
 ```
 
-Restart the gateway so the next session picks up the change:
+After adding the block, restart the gateway so the next session reads
+the updated `AGENTS.md`:
 
 ```sh
 openclaw gateway restart
 ```
+
+**Persistence.** `AGENTS.md` is bootstrap-injected into every future
+session's system prompt, including sub-agent sessions — so the rule
+propagates to delegated work. To undo, remove the
+`## Grounding discipline` section and restart the gateway again.
 
 ## Why it works
 
