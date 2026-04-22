@@ -12,10 +12,7 @@
 
 services:
   cookbook-test:
-    # Swap this image tag for the public OpenClaw image once published.
-    # Until then, set COOKBOOK_TEST_IMAGE to a locally-built tag, e.g.:
-    #   COOKBOOK_TEST_IMAGE=openclaw-local:latest docker compose ... run ...
-    image: ${COOKBOOK_TEST_IMAGE:-openclaw/openclaw:latest}
+    image: ${COOKBOOK_TEST_IMAGE:-ghcr.io/openclaw/openclaw:latest}
     working_dir: /work
     environment:
       - NO_COLOR=1
@@ -23,30 +20,7 @@ services:
     volumes:
       - ../:/work:ro
       - openclaw-home:/root/.openclaw
-    entrypoint: ["/bin/bash", "-euo", "pipefail", "-c"]
-    command: |
-      echo "--- openclaw init"
-      openclaw init
-
-      echo "--- first install.sh run"
-      /work/install.sh
-
-      echo "--- second install.sh run (idempotency check)"
-      /work/install.sh
-
-      echo "--- assertions"
-      thinking="$(openclaw config get agents.defaults.thinkingDefault)"
-      [[ "$thinking" == *adaptive* ]] || { echo "FAIL: thinkingDefault=$thinking"; exit 1; }
-      deny="$(openclaw config get agents.defaults.tools.deny)"
-      [[ "$deny" == *canvas* && "$deny" == *apply_patch* ]] || { echo "FAIL: deny=$deny"; exit 1; }
-      allow="$(openclaw config get agents.defaults.tools.allow)"
-      [[ "$allow" == *read* && "$allow" == *edit* && "$allow" == *web_search* ]] || { echo "FAIL: allow=$allow"; exit 1; }
-      [[ -f /root/.openclaw/workspace/skills/cookbook-helper/SKILL.md ]] || { echo "FAIL: SKILL missing"; exit 1; }
-
-      echo "--- atomic sub-command smoke test"
-      /work/install.sh apply deepwiki-mcp
-
-      echo "all assertions passed"
+    entrypoint: ["/bin/bash", "/work/test/e2e-run.sh"]
 
 volumes:
   openclaw-home:

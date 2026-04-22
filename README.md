@@ -12,6 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/frogasia/ilmuclaw-cookbook/main/ins
 
 One command. Applies to your existing OpenClaw setup. Idempotent.
 
+If you've never run `openclaw onboard`, the installer will pause, show you what OpenClaw's `--accept-risk` means, and ask for a y/n before running onboarding on your behalf. You can also pass `COOKBOOK_ACCEPT_RISK=1` to skip the prompt for reruns or CI.
+
 ## What the install does
 
 - **Thinking mode** — sets `agents.defaults.thinkingDefault` to `adaptive` so the agent scales reasoning depth per turn.
@@ -21,7 +23,7 @@ One command. Applies to your existing OpenClaw setup. Idempotent.
 
 ### Tool allowlist — the `beginner` profile
 
-The installer applies a **`beginner` profile** to `agents.defaults.tools` — a useful, friendly default for someone running OpenClaw on their laptop for the first time.
+The installer applies a **`beginner` profile** to OpenClaw's top-level `tools.allow` / `tools.deny` — a useful, friendly default for someone running OpenClaw on their laptop for the first time.
 
 | Tool | What it lets the agent do |
 |---|---|
@@ -42,7 +44,8 @@ Denied by default: `canvas`, `apply_patch` — these two overlap with `edit` / `
 **Want a stricter setup?** Drop tools you don't need. Reviewing your agent's tool surface periodically is a good habit — tight tool allowlists age better than broad ones.
 
 ```sh
-openclaw config set agents.defaults.tools.allow '["read","edit","write","message","memory_get","memory_search"]'
+openclaw config set tools.allow '["read","edit","write","message","memory_get","memory_search"]'
+openclaw gateway restart
 ```
 
 Good candidates to drop if you don't need them:
