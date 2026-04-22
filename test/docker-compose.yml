@@ -1,0 +1,52 @@
+# End-to-end test harness for install.sh.
+#
+# Spins up an OpenClaw container with an ephemeral config volume, runs the
+# install script twice (idempotency check), then asserts that the expected
+# state landed in openclaw.json and on disk.
+#
+# Usage:
+#   docker compose -f test/docker-compose.yml run --rm cookbook-test
+#
+# The host's ~/.openclaw is never touched — the volume below is per-run and
+# named so Compose cleans it up when the service exits with --rm.
+
+services:
+  cookbook-test:
+    # Swap this image tag for the public OpenClaw image once published.
+    # Until then, set COOKBOOK_TEST_IMAGE to a locally-built tag, e.g.:
+    #   COOKBOOK_TEST_IMAGE=openclaw-local:latest docker compose ... run ...
+    image: ${COOKBOOK_TEST_IMAGE:-openclaw/openclaw:latest}
+    working_dir: /work
+    environment:
+      - NO_COLOR=1
+      - COOKBOOK_REF=${COOKBOOK_REF:-main}
+    volumes:
+      - ../:/work:ro
+      - openclaw-home:/root/.openclaw
+    entrypoint: ["/bin/bash", "-euo", "pipefail", "-c"]
+    command: |
+      echo "--- openclaw init"
+      openclaw init
+
+      echo "--- first install.sh run"
+      /work/install.sh
+
+      echo "--- second install.sh run (idempotency check)"
+      /work/install.sh
+
+      echo "--- assertions"
+      thinking="$(openclaw config get agents.defaults.thinkingDefault)"
+      [[ "$thinking" == *adaptive* ]] || { echo "FAIL: thinkingDefault=$thinking"; exit 1; }
+      deny="$(openclaw config get agents.defaults.tools.deny)"
+      [[ "$deny" == *canvas* && "$deny" == *apply_patch* ]] || { echo "FAIL: deny=$deny"; exit 1; }
+      allow="$(openclaw config get agents.defaults.tools.allow)"
+      [[ "$allow" == *read* && "$allow" == *edit* ]] || { echo "FAIL: allow=$allow"; exit 1; }
+      [[ -f /root/.openclaw/workspace/skills/cookbook-helper/SKILL.md ]] || { echo "FAIL: SKILL missing"; exit 1; }
+
+      echo "--- atomic sub-command smoke test"
+      /work/install.sh apply deepwiki-mcp
+
+      echo "all assertions passed"
+
+volumes:
+  openclaw-home:
