@@ -29,7 +29,12 @@ SKILL_URL="${REPO_RAW}/skills/cookbook-helper/SKILL.md"
 
 DEEPWIKI_MCP='{"url":"https://mcp.deepwiki.com/mcp","transport":"streamable-http"}'
 
-TOOLS_ALLOW='["read","write","edit","exec","cron","sessions_spawn","sessions_send","sessions_list","sessions_history","memory_search","memory_get","message"]'
+# Profile: "beginner" — a useful, friendly default for someone running OpenClaw
+# on their laptop for the first time. Includes web_search + web_fetch so the
+# agent can actually research things, which is the #1 workflow. Users who want
+# to tighten down should shrink agents.defaults.tools.allow manually.
+PROFILE_NAME="beginner"
+TOOLS_ALLOW='["read","write","edit","exec","cron","sessions_spawn","sessions_send","sessions_list","sessions_history","memory_search","memory_get","message","web_search","web_fetch"]'
 TOOLS_DENY='["canvas","apply_patch"]'
 
 DOCS_URL="https://github.com/frogasia/ilmuclaw-cookbook"
@@ -41,7 +46,6 @@ readonly E_NO_CONFIG=11
 readonly E_NO_CURL=12
 readonly E_NO_NETWORK=13
 readonly E_CONFIG_WRITE=20
-readonly E_SKILL_FETCH=21
 readonly E_USAGE=64
 
 # ---------------------------------------------------------------------------
@@ -97,8 +101,11 @@ Exit codes:
   12  E_NO_CURL          curl not on PATH
   13  E_NO_NETWORK       cannot reach raw.githubusercontent.com
   20  E_CONFIG_WRITE     openclaw config/mcp set failed
-  21  E_SKILL_FETCH      SKILL download failed
   64  E_USAGE            bad argument
+
+SKILL download failures are non-fatal — a loud notice is printed and the
+config changes still apply. Rerun \`install.sh apply cookbook-helper-skill\`
+to retry.
 
 Docs: ${DOCS_URL}
 EOF
@@ -169,22 +176,47 @@ apply_deepwiki_mcp() {
   _mcp_set "deepwiki" "$DEEPWIKI_MCP"
 }
 
+# Non-fatal: a SKILL fetch failure shouldn't wipe out the config writes that
+# already succeeded. Sets SKILL_INSTALL_FAILED=1 so the summary can flag it
+# loudly at the end.
+SKILL_INSTALL_FAILED=0
+
 apply_cookbook_helper_skill() {
   log "fetching cookbook-helper SKILL"
   mkdir -p "$SKILL_DIR"
   local tmp="$SKILL_DIR/SKILL.md.tmp"
   trap 'rm -f "$tmp"' INT TERM EXIT
-  curl -fsSL "$SKILL_URL" -o "$tmp" || die "E_SKILL_FETCH" "$E_SKILL_FETCH" \
-    "failed to download ${SKILL_URL}" \
-    "verify the ref '${COOKBOOK_REF}' exists on github.com/frogasia/ilmuclaw-cookbook" \
-    "${DOCS_URL}#troubleshooting"
-  mv "$tmp" "$SKILL_DIR/SKILL.md"
+  if curl -fsSL "$SKILL_URL" -o "$tmp"; then
+    mv "$tmp" "$SKILL_DIR/SKILL.md"
+  else
+    rm -f "$tmp"
+    SKILL_INSTALL_FAILED=1
+    warn "failed to download ${SKILL_URL}"
+    warn "  config changes already applied — rerun \`install.sh apply cookbook-helper-skill\` later"
+  fi
   trap - INT TERM EXIT
 }
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+print_skill_failure_notice() {
+  local pfx="${C_YEL}${C_BOLD}" sfx="$C_RST"
+  printf '\n%s!! cookbook-helper SKILL was not installed.%s\n' "$pfx" "$sfx" >&2
+  printf '%s   the other configuration changes were applied successfully.%s\n' "$C_YEL" "$sfx" >&2
+  printf '%s   rerun this section later with:%s\n' "$C_YEL" "$sfx" >&2
+  printf '%s       install.sh apply cookbook-helper-skill%s\n\n' "$C_YEL" "$sfx" >&2
+}
+
+print_security_note() {
+  local pfx="${C_YEL}${C_BOLD}" sfx="$C_RST"
+  printf '\n%snote: applied the "%s" profile — tuned for a friendly local setup.%s\n' \
+    "$pfx" "$PROFILE_NAME" "$sfx"
+  printf '%sreviewing your agent'\''s tool surface periodically is a good habit —%s\n' "$C_YEL" "$sfx"
+  printf '%stight tool allowlists age better than broad ones. see:%s\n' "$C_YEL" "$sfx"
+  printf '%s    %s#tool-allowlist--the-beginner-profile%s\n\n' "$C_YEL" "$DOCS_URL" "$sfx"
+}
 
 apply_all() {
   preflight
@@ -193,6 +225,8 @@ apply_all() {
   apply_deepwiki_mcp
   apply_cookbook_helper_skill
   log "done. restart your openclaw session for changes to take effect."
+  [[ "$SKILL_INSTALL_FAILED" -eq 1 ]] && print_skill_failure_notice
+  print_security_note
 }
 
 main() {

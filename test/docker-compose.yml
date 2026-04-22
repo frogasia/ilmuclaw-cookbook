@@ -40,7 +40,7 @@ services:
       deny="$(openclaw config get agents.defaults.tools.deny)"
       [[ "$deny" == *canvas* && "$deny" == *apply_patch* ]] || { echo "FAIL: deny=$deny"; exit 1; }
       allow="$(openclaw config get agents.defaults.tools.allow)"
-      [[ "$allow" == *read* && "$allow" == *edit* ]] || { echo "FAIL: allow=$allow"; exit 1; }
+      [[ "$allow" == *read* && "$allow" == *edit* && "$allow" == *web_search* ]] || { echo "FAIL: allow=$allow"; exit 1; }
       [[ -f /root/.openclaw/workspace/skills/cookbook-helper/SKILL.md ]] || { echo "FAIL: SKILL missing"; exit 1; }
 
       echo "--- atomic sub-command smoke test"

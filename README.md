@@ -19,9 +19,9 @@ One command. Applies to your existing OpenClaw setup. Idempotent.
 - **DeepWiki MCP** — registers the DeepWiki MCP server so your agent can query this cookbook.
 - **Cookbook-helper SKILL** — installs a SKILL that routes cookbook questions through DeepWiki into this repo.
 
-### Tool allowlist — what's enabled and why
+### Tool allowlist — the `beginner` profile
 
-The installer applies these defaults to `agents.defaults.tools`:
+The installer applies a **`beginner` profile** to `agents.defaults.tools` — a useful, friendly default for someone running OpenClaw on their laptop for the first time.
 
 | Tool | What it lets the agent do |
 |---|---|
@@ -34,22 +34,25 @@ The installer applies these defaults to `agents.defaults.tools`:
 | `sessions_send` / `sessions_list` / `sessions_history` | Talk to and inspect other sessions |
 | `memory_search` / `memory_get` | Look things up in long-term memory |
 | `message` | Send messages on configured channels |
+| `web_search` | Search the web using the configured provider |
+| `web_fetch` | Fetch the contents of a URL |
 
 Denied by default: `canvas`, `apply_patch` — these two overlap with `edit` / `write` and are common sources of tool-call loops on smaller models.
 
-**Want a more conservative setup?** Drop tools you don't need with:
+**Want a stricter setup?** Drop tools you don't need. Reviewing your agent's tool surface periodically is a good habit — tight tool allowlists age better than broad ones.
 
 ```sh
 openclaw config set agents.defaults.tools.allow '["read","edit","write","message","memory_get","memory_search"]'
 ```
 
-Good candidates to drop if you're just exploring:
+Good candidates to drop if you don't need them:
 
 - `exec` — only needed if you want the agent to run shell commands.
+- `web_search` / `web_fetch` — network-facing tools; omit if you want the agent fully local.
 - `sessions_spawn` — only needed if you want multi-agent delegation.
 - `cron` — only needed if you want scheduled tasks.
 
-A note on safety: this allowlist is tuned for a **single-user laptop**. If you're running OpenClaw on a shared or untrusted machine, narrow the list before your first session — `exec` in particular gives the agent a broad reach into your shell environment.
+`web_search` and `web_fetch` are worth calling out: they give the agent reach to arbitrary URLs and search results, which is where most real work happens but also where prompt-injection and data-exfiltration risks enter. If you're handling sensitive material, consider dropping them.
 
 ## Local testing
 
