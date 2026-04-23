@@ -66,6 +66,7 @@ The install script is testable end-to-end against a containerised OpenClaw witho
 - [Tool-call discipline](recipes/tool-call-discipline.md) — keep the agent from calling tools in loops.
 - [Hallucination mitigation](recipes/hallucination-mitigation.md) — prompting patterns that keep answers grounded.
 - [Thinking mode tuning](recipes/thinking-mode-tuning.md) — dial reasoning depth for the task at hand.
+- [Within-turn trust](recipes/within-turn-trust.md) — stop the agent from re-reading the same file within a single turn.
 
 Browse the [recipes index](recipes/README.md) for the full list.
 

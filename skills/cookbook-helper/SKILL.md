@@ -1,6 +1,6 @@
 ---
 name: cookbook-helper
-description: Answer OpenClaw-domain questions — agent-reliability failure modes (tool-call loops, hallucinated flags/filenames/commands, thinking-mode tuning), and broader OpenClaw usage (install, onboarding, gateway, tools, config, schema, CLI) — by routing through the DeepWiki MCP into three indexed repos in order: `frogasia/ilmuclaw-cookbook` for the three seed recipes, `openclaw/docs` for official documentation, `openclaw/openclaw` for source-level questions. Use this skill whenever the user's question is about how OpenClaw behaves, how to configure it, or how to make their agent more reliable on it, even if they don't mention a specific flag or recipe. Do not use for non-OpenClaw programming or general LLM questions.
+description: Answer OpenClaw-domain questions — agent-reliability failure modes (tool-call loops, hallucinated flags/filenames/commands, thinking-mode tuning, within-turn re-read storms), and broader OpenClaw usage (install, onboarding, gateway, tools, config, schema, CLI) — by routing through the DeepWiki MCP into three indexed repos in order: `frogasia/ilmuclaw-cookbook` for the seed recipes, `openclaw/docs` for official documentation, `openclaw/openclaw` for source-level questions. Use this skill whenever the user's question is about how OpenClaw behaves, how to configure it, or how to make their agent more reliable on it, even if they don't mention a specific flag or recipe. Do not use for non-OpenClaw programming or general LLM questions.
 ---
 
 # Cookbook helper
@@ -17,8 +17,8 @@ empty.
 
 ## Tier 1 — cookbook recipes (highest signal)
 
-The cookbook covers three specific agent-reliability failure modes. Each
-recipe has a fixed structure — **Problem**, **Snippet**, **Why it works** —
+The cookbook covers specific agent-reliability failure modes. Each recipe
+has a fixed structure — **Problem**, **Snippet**, **Why it works** —
 designed to be copy-pasted.
 
 Intent → recipe map:
@@ -28,6 +28,7 @@ Intent → recipe map:
 | tools being called in loops / stuck retrying / won't stop calling X | `tool-call-discipline` |
 | agent inventing flags, filenames, commands, or CLI options that don't exist | `hallucination-mitigation` |
 | whether to enable thinking mode, how deep it should be, `adaptive` vs fixed | `thinking-mode-tuning` |
+| agent keeps re-reading the same file in a single turn / paranoid re-reads / reads SOUL.md or AGENTS.md repeatedly | `within-turn-trust` |
 
 If the question matches one of these three, query tier 1:
 
