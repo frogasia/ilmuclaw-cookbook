@@ -40,6 +40,23 @@ doing legitimate bulk work may not. If the tight profile blocks work
 you actually want, roll back to defaults by omitting the threshold
 lines (leave only `enabled true`), or set them to `10` / `20`.
 
+**Caveat on the tight critical threshold.** A `criticalThreshold`
+trip is not just a warning — it fires OpenClaw's global circuit
+breaker, which hard-blocks every subsequent call to the offending
+tool for the remainder of the session. You'll see it in logs as
+`Global circuit breaker triggered: <tool> repeated <N> times with
+no progress`, followed by every downstream call failing with
+`CRITICAL: <tool> has repeated identical no-progress outcomes ...`.
+Breaker state is per-session and in-memory, keyed by `sessionId`;
+there is no confirmed RPC to inspect or clear it. A container
+restart clears it; a session reset very likely does too, but that's
+untested. The practical consequence: a false positive on `12`
+doesn't just slow the turn down, it locks that tool out of the
+session until restart. If your agent does legitimate bulk work
+that repeats one tool (ripgrep sweeps, test runners, large read
+fan-outs), prefer the shipped defaults (`10` / `20`) or raise
+`criticalThreshold` well above the expected repeat count.
+
 The detector that catches the common case is `genericRepeat` — same
 tool, same arguments, same result. It's on by default once
 `loopDetection.enabled` is true; you don't need to touch it. Two other
