@@ -38,11 +38,21 @@ def sha(s: str) -> str:
 
 @dataclass
 class ToolEvent:
-    """A single tool call with its paired result (when available)."""
+    """One tool call paired with its result and the proximate token cost.
+
+    Detectors only ever see ToolEvent — they never re-parse the JSONL. This
+    keeps detector logic decoupled from pi-mono's session schema: if a future
+    schema change requires a new field, it lands here and parse_session adapts.
+
+    `args_hash` and `result_hash` are sha256 prefixes (16 hex chars) of canonical
+    JSON for the args and the concatenated TextContent of the result. `result_hash`
+    is None when the toolResult message is missing (still in flight, dropped) or
+    when all result content is ImageContent (no meaningful hash; per §6a, v1).
+    """
     entry_id: str
     tool: str
     args_hash: str
-    result_hash: str | None  # None when result missing or all ImageContent
+    result_hash: str | None
     is_error: bool
     assistant_input_tokens: int
     assistant_output_tokens: int
@@ -50,6 +60,13 @@ class ToolEvent:
 
 @dataclass
 class Session:
+    """Parsed view of one session JSONL file.
+
+    Holds both the raw `entries` (for header/turn counting) and the derived
+    `tool_events` list (which is what every detector actually consumes).
+    `total_tokens` is summed across all assistant messages, not just those
+    containing tool calls — it represents the full LLM bill for the session.
+    """
     session_id: str
     agent_id: str
     cwd: str
@@ -62,7 +79,14 @@ class Session:
 
 
 def parse_session(path: Path) -> Session:
-    """Parse JSONL; tolerate malformed lines (mirrors pi-mono's parser)."""
+    """Parse a session JSONL into a Session.
+
+    Tolerates malformed lines (skips them, mirroring pi-mono's parser). Walks
+    entries in file order; does not reconstruct the parent/child tree, since v1
+    sessions lack `parentId` and v3 branches are out of scope per §6a. Token
+    cost is split equally across tool calls in the same assistant message
+    (see analyze() for why proximate attribution is good enough for v1).
+    """
     entries: list[dict] = []
     for line in path.read_text().splitlines():
         line = line.strip()
@@ -166,6 +190,20 @@ def _hash_result(result: dict | None) -> str | None:
 # ---------- detectors ----------
 
 def detect_generic_repeat(sess: Session) -> list[dict]:
+    """Flag tools called repeatedly with identical arguments inside a sliding window.
+
+    Catches the most common failure mode: an agent stuck re-running the same
+    `read` / `grep` / `bash` invocation because it doesn't trust the previous
+    result, or because instruction-following degraded mid-turn. Mirrors
+    OpenClaw's `tools.loopDetection` runtime backstop (warn=10, crit=20 over
+    the last 30 calls) so post-hoc signals line up with what the runtime would
+    have seen.
+
+    Caveat: ignores result content. If the agent is correctly polling a URL
+    that legitimately returns different data each time, this still fires.
+    Cross-check with `no_progress_poll` to distinguish "looping" from "polling
+    a moving target."
+    """
     events = sess.tool_events[-WINDOW:] if len(sess.tool_events) > WINDOW else sess.tool_events
     counts: dict[tuple[str, str], list[ToolEvent]] = {}
     for ev in events:
@@ -192,6 +230,17 @@ def detect_generic_repeat(sess: Session) -> list[dict]:
 
 
 def detect_ping_pong(sess: Session) -> list[dict]:
+    """Flag the longest A-B-A-B alternation in the recent window.
+
+    Catches the second-most-common failure mode: an agent oscillating between
+    two tools (typically `read` ↔ `edit`, or a search tool ↔ a viewer) without
+    converging. Looks at tool *names* only, so a true cycle on the same pair of
+    files reads as ping-pong even when args differ slightly.
+
+    Returns at most one signal — the longest alternating run found. Warn at 4
+    full cycles (8 calls), crit at 8 cycles (16 calls). Below 4 cycles the
+    pattern is too noisy to call.
+    """
     events = sess.tool_events[-WINDOW:] if len(sess.tool_events) > WINDOW else sess.tool_events
     if len(events) < 4:
         return []
@@ -232,6 +281,18 @@ def detect_ping_pong(sess: Session) -> list[dict]:
 
 
 def detect_no_progress_poll(sess: Session) -> list[dict]:
+    """Flag identical (call, result) pairs — the agent learned nothing new.
+
+    Stricter cousin of `generic_repeat`: only counts repeats where the result
+    content is byte-identical too. This is the strongest "the agent is wasting
+    tokens" signal because legitimate polling against a moving target would
+    produce different result hashes. Tighter thresholds (warn=5, crit=10) than
+    generic_repeat reflect the higher confidence.
+
+    Caveat: skips events whose result hash is None — that includes results not
+    yet written when the file was inspected, and image-only results (no
+    meaningful text hash; per §6a, v1 limitation).
+    """
     events = [ev for ev in sess.tool_events if ev.result_hash is not None]
     events = events[-WINDOW:] if len(events) > WINDOW else events
     counts: dict[tuple[str, str, str], list[ToolEvent]] = {}
@@ -259,6 +320,18 @@ def detect_no_progress_poll(sess: Session) -> list[dict]:
 
 
 def detect_token_hotspot(sess: Session, per_tool: dict) -> list[dict]:
+    """Flag any single tool that consumes a disproportionate share of tokens.
+
+    Whole-session view (no window) — answers "where did the budget go?" Useful
+    for triaging cost-blown sessions where no individual loop fired but one
+    tool quietly dominated. Warn at 40% share, crit at 60%.
+
+    Caveat: token attribution is proximate (input+output of the AssistantMessage
+    holding the toolCall, split equally across calls in that message). Cache
+    reads/writes are excluded from the share calculation. Sessions with very
+    few tool variants (2-3) will naturally trip this even when behaviour is
+    healthy — interpret alongside the per-tool call counts.
+    """
     total = sum(p["tokens_attributed"] for p in per_tool.values())
     if total == 0:
         return []
@@ -284,6 +357,18 @@ def detect_token_hotspot(sess: Session, per_tool: dict) -> list[dict]:
 
 
 def detect_error_storm(sess: Session, per_tool: dict) -> list[dict]:
+    """Flag tools whose results are mostly errors (≥30% with n≥3).
+
+    Catches "agent keeps trying the wrong shape" — wrong arguments, missing
+    permissions, malformed paths — without needing to read the error text. The
+    n≥3 floor avoids noise from one-off transient errors. Warn at 30%, crit
+    at 50%.
+
+    Caveat: an `isError:true` result can mean anything the tool implementation
+    decided to flag — schema validation failure, business-logic rejection,
+    upstream 5xx. Treat this as "look at these results manually" rather than
+    "the tool is broken."
+    """
     out = []
     for tool, p in per_tool.items():
         n = p["calls"]
@@ -309,6 +394,11 @@ def detect_error_storm(sess: Session, per_tool: dict) -> list[dict]:
 
 
 def per_tool_stats(sess: Session) -> dict:
+    """Aggregate calls / errors / attributed tokens / share, keyed by tool name.
+
+    Detector inputs and the `per_tool_stats` block in the JSON output share
+    this same shape so what you read in the summary is what the detectors saw.
+    """
     stats: dict[str, dict] = {}
     for ev in sess.tool_events:
         s = stats.setdefault(ev.tool, {"calls": 0, "errors": 0, "tokens_attributed": 0, "token_share": 0.0})
@@ -323,6 +413,11 @@ def per_tool_stats(sess: Session) -> dict:
 
 
 def analyze(path: Path) -> dict:
+    """End-to-end: parse the JSONL, run all five detectors, return the report dict.
+
+    The returned dict matches the JSON output schema documented in README.md and
+    Notion §6a. `signals` is empty when nothing fired — a healthy session.
+    """
     sess = parse_session(path)
     per_tool = per_tool_stats(sess)
     signals = (
@@ -349,6 +444,12 @@ def analyze(path: Path) -> dict:
 
 
 def render_text(report: dict) -> str:
+    """Render an analyze() report as a 20–40 line human-readable summary.
+
+    Designed to fit one terminal screen: header (session/agent/model/tokens),
+    per-tool table sorted by call count, then the firing signals. Use --format
+    json instead when piping into other tooling.
+    """
     lines = []
     lines.append(f"session  {report['session_id']}")
     lines.append(f"agent    {report['agent_id'] or '<unknown>'}")
@@ -383,13 +484,51 @@ def render_text(report: dict) -> str:
     return "\n".join(lines)
 
 
+DESCRIPTION = """\
+Read one OpenClaw session JSONL file and report tool-call trajectory health.
+
+The analyzer answers questions you'd otherwise answer by scrolling thousands
+of lines: did the agent loop on the same tool, did it ping-pong between two
+tools, did one tool quietly burn most of the token budget, did one tool
+consistently error out? It runs five deterministic detectors over the session
+and prints either a short human-readable summary (default) or a JSON report
+suitable for piping into other tooling.
+
+Detectors (warn / crit thresholds in parentheses):
+  generic_repeat    same tool + same args, sliding window of 30   (10 / 20)
+  ping_pong         A-B-A-B alternation, sliding window of 30     (4 cycles / 8)
+  no_progress_poll  same call + same result hash                  (5 / 10)
+  token_hotspot     one tool dominates input+output token share   (40% / 60%)
+  error_storm       isError:true rate for one tool, n>=3          (30% / 50%)
+
+Sessions live at:  ~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl
+Pass the full path so <agentId> can be derived from it.
+"""
+
+EPILOG = """\
+examples:
+  python3 analyze.py ~/.openclaw/agents/triage-bot/sessions/abc123.jsonl
+  python3 analyze.py session.jsonl --format json | jq '.signals'
+  for s in ~/.openclaw/agents/*/sessions/*.jsonl; do \\
+      python3 analyze.py "$s" --format json | jq -c '{id:.session_id, sigs:(.signals|length)}'; \\
+  done
+
+exit codes:
+  0  success
+  2  path is not a file
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        description="Analyze an OpenClaw session JSONL for tool-call trajectory signals.",
+        prog="analyze.py",
+        description=DESCRIPTION,
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("path", help="Path to a session .jsonl file")
+    p.add_argument("path", help="Path to a session .jsonl file (typically under ~/.openclaw/agents/<agentId>/sessions/)")
     p.add_argument("--format", choices=("json", "text"), default="text",
-                   help="Output format (default: text)")
+                   help="Output format. text (default) is human-readable; json matches the schema in README.md.")
     args = p.parse_args(argv)
 
     path = Path(args.path)
