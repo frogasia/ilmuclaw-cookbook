@@ -72,12 +72,57 @@ system prompt, and the injection extends to sub-agent sessions — so the
 rule propagates to delegated work automatically. To undo, remove the
 `## Within-turn trust` section and restart the gateway again.
 
-**Fit check before applying.** This override suits short-lived task agents
-and single-purpose bots. If your agent is a long-lived personal assistant
-that maintains its own `MEMORY.md` between sessions via heartbeats, the
-default Continuity priming is doing real work for you — leave it alone and
-look at tool-call discipline as the more targeted fix for any loop you're
-seeing.
+**Fit check.** Before applying, read the *When not to apply this* section
+below — the default priming is load-bearing for a real class of deployments,
+and this override will regress them.
+
+## When not to apply this
+
+The default Continuity priming exists for a reason, and the reason is real.
+Before applying this override, check your deployment against the patterns
+below — if any of them describe what you're running, the override will
+regress you and you should leave `SOUL.md` alone.
+
+**Long-lived personal-assistant agents.** If your agent runs continuously
+across days or weeks, wakes from heartbeats, and the conversation spans
+many sessions separated by hours or more, the filesystem *is* the memory
+substrate. `MEMORY.md` and `memory/YYYY-MM-DD.md` are how identity and
+context survive context compaction and process restarts. "Wake up fresh
+and read your files" is literal operational truth for this shape, not a
+loose metaphor. Removing the priming tells the agent to trust a stale
+view of itself, and it will drift.
+
+**Agents that self-maintain their workspace.** If your agent updates
+`MEMORY.md`, writes daily logs, or distills old memories during heartbeats
+— the unwind-ai 24/7-team pattern — the Continuity framing is the
+instruction that keeps those writes consistent. The agent needs to re-read
+what the last heartbeat wrote, because a previous instance of itself put
+information there the current instance doesn't have.
+
+**Multi-agent setups where sibling agents write to shared files.** If you
+have orchestrator / sub-agent topologies where one agent writes to a
+shared `MEMORY.md` or state file and another reads it, re-reads within a
+turn can be legitimate — the file may have been written by a sibling
+between the first read and the second. The override's "trust what you
+just saw" language is still directionally correct here but the nuance
+needs thought, and if you can't articulate the nuance for your specific
+topology, the safer move is to leave the default alone and fix the loop
+at the tool-call-discipline layer instead.
+
+**The loop you're debugging isn't a re-read storm.** If your agent is
+looping on something other than repeated `read` calls — same `exec`
+command over and over, ping-ponging between two tools, or retrying on a
+genuine error — that's the tool-call-discipline or retry-discipline
+recipe's territory, not this one. Applying the within-turn-trust rule
+won't help, and it will add prompt surface area you then have to reason
+about when the real loop is elsewhere.
+
+**You haven't seen the symptom.** If you're applying this prophylactically
+"just in case", don't. The override does nothing useful until the agent
+is actually re-reading, and carrying an unneeded rule in every system
+prompt is a small but real cost — it's context you could spend on
+something load-bearing. Wait until you see the storm, confirm it's the
+within-turn re-read shape (not a different loop), then apply.
 
 ## Why it works
 
