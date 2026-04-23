@@ -47,7 +47,20 @@ code=$?
 set -e
 assert_exit 64 "$code" "E_USAGE (no section)"
 
-# 4. --help exits 0 cleanly.
+# 4. E_UNSUPPORTED_OS — shadow `uname` to report an unknown kernel.
+mkdir -p "$SANDBOX/fakebin"
+cat >"$SANDBOX/fakebin/uname" <<'EOF'
+#!/usr/bin/env bash
+echo Plan9
+EOF
+chmod +x "$SANDBOX/fakebin/uname"
+set +e
+env -i PATH="$SANDBOX/fakebin:/usr/bin:/bin" HOME="$SANDBOX" bash "$SCRIPT" >/dev/null 2>&1
+code=$?
+set -e
+assert_exit 16 "$code" "E_UNSUPPORTED_OS"
+
+# 5. --help exits 0 cleanly.
 set +e
 "$SCRIPT" --help >/dev/null
 code=$?

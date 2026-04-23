@@ -14,6 +14,18 @@ One command. Applies to your existing OpenClaw setup. Idempotent.
 
 If you've never run `openclaw onboard`, the installer will pause, show you what OpenClaw's `--accept-risk` means, and ask for a y/n before running onboarding on your behalf. You can also pass `COOKBOOK_ACCEPT_RISK=1` to skip the prompt for reruns or CI.
 
+## Platform support
+
+| Platform | Status | Notes |
+|---|---|---|
+| macOS (Darwin) | ✅ supported | Works out of the box. |
+| Linux | ✅ supported | Works out of the box. |
+| Windows (WSL2) | ✅ supported | Detected as Linux — install OpenClaw inside WSL2 and run the one-liner there. |
+| Windows (Git Bash / MSYS2 / Cygwin) | ⚠️ best-effort | Runs, but the `/dev/tty` consent read can hang. Set `COOKBOOK_ACCEPT_RISK=1` if the prompt stalls. |
+| Windows (native `cmd` / PowerShell) | ❌ unsupported | No bash interpreter — use WSL2. |
+
+If you're on native Windows, install WSL2 first (`wsl --install`), then run the cookbook one-liner inside your WSL shell. There is no plan to ship a PowerShell port.
+
 ## How to run it
 
 Three situations cover almost everyone. Pick the one that sounds like you:
