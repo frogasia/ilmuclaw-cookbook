@@ -7,6 +7,8 @@
 
 # Docker-compose test harness state (bind-mounted ~/.openclaw inside the container)
 test/.state/
+.state-a/
+.state-b/
 *.env
 tmp/
 __pycache__/

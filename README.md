@@ -14,6 +14,46 @@ One command. Applies to your existing OpenClaw setup. Idempotent.
 
 If you've never run `openclaw onboard`, the installer will pause, show you what OpenClaw's `--accept-risk` means, and ask for a y/n before running onboarding on your behalf. You can also pass `COOKBOOK_ACCEPT_RISK=1` to skip the prompt for reruns or CI.
 
+## How to run it
+
+Three situations cover almost everyone. Pick the one that sounds like you:
+
+### A. Brand-new to OpenClaw
+
+Run the one-liner above in a terminal. The installer will onboard OpenClaw for you, then apply the cookbook. When you start the gateway afterwards, everything is already in place — nothing else to do.
+
+### B. Already using OpenClaw on this machine
+
+Run the one-liner in a terminal, then restart the gateway so it loads the new DeepWiki MCP server:
+
+```sh
+openclaw gateway restart
+```
+
+That's it. Your existing conversations and workspace stay intact.
+
+### C. All you have is the OpenClaw chat UI (no terminal access)
+
+This comes up when someone else runs OpenClaw for you — for example, a shared instance, a hosted deployment, or a Docker container you connect to through the web UI.
+
+Paste the install command into the chat. The agent will run it, and most of the cookbook takes effect right away:
+
+- ✅ The **cookbook-helper skill** is available on your next message.
+- ✅ **Thinking mode** and the **tool allowlist** apply the next time you start a fresh conversation.
+- ⚠️ **DeepWiki MCP** needs the gateway to be restarted, and the agent can't restart the process it's running inside. Ask whoever operates that OpenClaw to run `openclaw gateway restart` — or skip this one piece and install it later.
+
+> A caveat worth checking with your operator: the cookbook's changes live in `~/.openclaw/openclaw.json`. Restarting the gateway re-reads that file, so the patch survives — **unless** the host reseeds the config on every gateway boot (some container setups do). If you're on a shared deployment and DeepWiki keeps disappearing after restarts, that's where to look.
+
+If you'd rather skip DeepWiki cleanly and avoid the restart issue altogether, ask the agent to run these instead of the full installer:
+
+```sh
+install.sh apply cookbook-helper-skill
+install.sh apply tool-allowlist
+install.sh apply thinking-mode
+```
+
+You (or your operator) can add DeepWiki later with `install.sh apply deepwiki-mcp` followed by a gateway restart.
+
 ## What the install does
 
 - **Thinking mode** — sets `agents.defaults.thinkingDefault` to `adaptive` so the agent scales reasoning depth per turn.

@@ -1,0 +1,154 @@
+# A/B test harness for cookbook install.sh.
+#
+# Runs two independent OpenClaw gateway instances (variant-a / variant-b) so
+# you can test different cookbook configurations side-by-side.  Each variant
+# gets its own isolated state directory and host port so they never collide.
+#
+# Quick start:
+#
+#   # Start both gateways (install.sh runs on first boot):
+#   docker compose up variant-a variant-b
+#
+#   # Connect to variant-a from the host:
+#   openclaw tui --gateway ws://127.0.0.1:28789
+#
+#   # Connect to variant-b from the host:
+#   openclaw tui --gateway ws://127.0.0.1:28790
+#
+#   # Start only one variant:
+#   docker compose up variant-a
+#
+#   # Interactive shell into a running variant (in a second terminal):
+#   docker compose run --rm shell-a
+#   docker compose run --rm shell-b
+#
+#   # Wipe state for a clean rerun:
+#   docker compose down -v
+#   rm -rf .state-a .state-b
+#
+# Port mapping (all loopback on host):
+#   variant-a gateway  →  127.0.0.1:${COOKBOOK_HOST_PORT_A:-28789}
+#   variant-b gateway  →  127.0.0.1:${COOKBOOK_HOST_PORT_B:-28790}
+#
+# Override ports if those are taken:
+#   COOKBOOK_HOST_PORT_A=38789 COOKBOOK_HOST_PORT_B=38790 docker compose up
+#
+# Override the image for both variants at once:
+#   COOKBOOK_TEST_IMAGE=ghcr.io/openclaw/openclaw:edge docker compose up
+#
+# The host's real ~/.openclaw is never touched — .state-a/ and .state-b/ are
+# dedicated, gitignored directories for this harness.
+
+x-gateway-base: &gateway-base
+  image: ${COOKBOOK_TEST_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+  working_dir: /work
+  environment:
+    - NO_COLOR=1
+    - COOKBOOK_ACCEPT_RISK=1
+    - COOKBOOK_BASE_URL=file:///work
+    - COOKBOOK_REF=${COOKBOOK_REF:-main}
+  volumes:
+    - ./:/work:ro
+  entrypoint: ["/bin/bash", "-c"]
+  # --bind lan makes the gateway listen on all container interfaces so Docker's
+  # port-forwarding reaches it from the host.
+  # --allow-unconfigured skips the gateway.mode=local guard that the test state
+  # doesn't set.
+  stdin_open: true
+  tty: true
+
+x-shell-base: &shell-base
+  image: ${COOKBOOK_TEST_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+  working_dir: /root
+  environment:
+    - NO_COLOR=1
+  volumes:
+    - ./:/work:ro
+  entrypoint: ["/bin/bash"]
+  stdin_open: true
+  tty: true
+
+services:
+  # ---------------------------------------------------------------------------
+  # Variant A — apply cookbook defaults, then keep the gateway running.
+  # ---------------------------------------------------------------------------
+  variant-a:
+    <<: *gateway-base
+    # The openclaw image runs as user `node` (uid 1000) with home /home/node.
+    # Mount the host state dir there, not /root/.openclaw, or nothing persists.
+    volumes:
+      - ./:/work:ro
+      - ./.state-a:/home/node/.openclaw
+    env_file:
+      - .variant-a.env
+    ports:
+      - "127.0.0.1:${COOKBOOK_HOST_PORT_A:-28789}:18789"
+    # If the in-UI agent runs `openclaw gateway restart`, the gateway process
+    # exits → the container exits (gateway is PID 1 via exec). `unless-stopped`
+    # brings it back so the next boot re-reads openclaw.json with the agent's
+    # changes already on disk. Effectively: gateway restart = container restart,
+    # but the user's cookbook install survives.
+    restart: unless-stopped
+    command:
+      - |
+        # First-boot seed only. If the workspace already exists we assume the
+        # user (or a previous boot) has modified config — don't clobber it.
+        if [[ ! -d ~/.openclaw/workspace ]]; then
+          openclaw onboard --non-interactive --accept-risk --skip-health
+          cp /work/openclaw.base.json ~/.openclaw/openclaw.json
+        fi
+        echo ""
+        echo "=== variant-a gateway ready ==="
+        echo "    http://localhost:${COOKBOOK_HOST_PORT_A:-28789}"
+        echo ""
+        exec openclaw gateway --allow-unconfigured
+
+  # ---------------------------------------------------------------------------
+  # Variant B — apply a different configuration for A/B comparison.
+  #
+  # Customise this service to differ from variant-a.  Common knobs:
+  #   • Pass a different COOKBOOK_REF to test a branch/PR
+  #   • Bind-mount an alternate install.sh or config patch
+  #   • Set extra openclaw config flags after install.sh
+  # ---------------------------------------------------------------------------
+  variant-b:
+    <<: *gateway-base
+    volumes:
+      - ./:/work:ro
+      - ./.state-b:/root/.openclaw
+    ports:
+      - "127.0.0.1:${COOKBOOK_HOST_PORT_B:-28790}:18789"
+    # Example: set COOKBOOK_REF_B to test a different branch in variant-b.
+    environment:
+      - NO_COLOR=1
+      - COOKBOOK_ACCEPT_RISK=1
+      - COOKBOOK_BASE_URL=file:///work
+      - COOKBOOK_REF=${COOKBOOK_REF_B:-${COOKBOOK_REF:-main}}
+    command:
+      - |
+        /work/install.sh
+        openclaw config set gateway.controlUi.allowedOrigins \
+          '["http://127.0.0.1:${COOKBOOK_HOST_PORT_B:-28790}","http://localhost:${COOKBOOK_HOST_PORT_B:-28790}"]' >/dev/null
+        echo ""
+        echo "=== variant-b gateway ready ==="
+        echo "    openclaw tui --gateway ws://127.0.0.1:${COOKBOOK_HOST_PORT_B:-28790}"
+        echo ""
+        exec openclaw gateway --port 18789 --bind lan --allow-unconfigured
+
+  # ---------------------------------------------------------------------------
+  # Interactive shells — attach to the state of each variant for inspection.
+  # Use: docker compose run --rm shell-a
+  # ---------------------------------------------------------------------------
+  shell-a:
+    <<: *shell-base
+    volumes:
+      - ./:/work:ro
+      - ./.state-a:/home/node/.openclaw
+    profiles: [shell]
+
+  shell-b:
+    <<: *shell-base
+    volumes:
+      - ./:/work:ro
+      - ./.state-b:/root/.openclaw
+    profiles: [shell]
