@@ -7,5 +7,6 @@ Each recipe solves one specific failure mode completely. No recipe depends on ha
 - [Tool-call discipline](tool-call-discipline.md)
 - [Hallucination mitigation](hallucination-mitigation.md)
 - [Thinking mode tuning](thinking-mode-tuning.md)
+- [Within-turn trust](within-turn-trust.md)
 
 More recipes will be added over time as new patterns prove themselves.
