@@ -58,16 +58,29 @@ services:
     # --bind lan binds the gateway to all interfaces inside the container
     # so Docker's port forwarding reaches it from the host. --allow-unconfigured
     # skips the gateway.mode=local guard since our test config doesn't set it.
-    command: |
-      /work/install.sh
-      echo ""
-      echo "=== gateway ready — connect from host ==="
-      echo "    openclaw tui --gateway ws://127.0.0.1:${COOKBOOK_HOST_GATEWAY_PORT:-28789}"
-      echo "    wscat -c ws://127.0.0.1:${COOKBOOK_HOST_GATEWAY_PORT:-28789}"
-      echo ""
-      echo "Ctrl-C stops the gateway."
-      echo ""
-      exec openclaw gateway --port 18789 --bind lan --allow-unconfigured
+    #
+    # `command` MUST be a single-element list, not a YAML scalar. With a scalar
+    # + list entrypoint, Compose shlex-splits the scalar into separate argv
+    # entries — `bash -c` then treats only the first token as the script and
+    # silently drops the rest as positional params.
+    command:
+      - |
+        /work/install.sh
+        # A non-loopback gateway (--bind lan) triggers OpenClaw's Control-UI
+        # origin guard. Pin allowedOrigins to the host-published port so only
+        # clients addressing us via the mapped loopback URL are accepted —
+        # stricter than --dangerously-allow-host-header-origin-fallback, but
+        # good enough for a test harness and closer to prod posture.
+        openclaw config set gateway.controlUi.allowedOrigins \
+          '["http://127.0.0.1:${COOKBOOK_HOST_GATEWAY_PORT:-28789}","http://localhost:${COOKBOOK_HOST_GATEWAY_PORT:-28789}"]' >/dev/null
+        echo ""
+        echo "=== gateway ready — connect from host ==="
+        echo "    openclaw tui --gateway ws://127.0.0.1:${COOKBOOK_HOST_GATEWAY_PORT:-28789}"
+        echo "    wscat -c ws://127.0.0.1:${COOKBOOK_HOST_GATEWAY_PORT:-28789}"
+        echo ""
+        echo "Ctrl-C stops the gateway."
+        echo ""
+        exec openclaw gateway --port 18789 --bind lan --allow-unconfigured
     stdin_open: true
     tty: true
 
