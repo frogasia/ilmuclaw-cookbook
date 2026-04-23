@@ -1,0 +1,178 @@
+{
+  "gateway": {
+    "port": 18789,
+    "bind": "lan",
+    "controlUi": {
+      "allowedOrigins": ["http://localhost:28789", "http://127.0.0.1:28789"],
+      "dangerouslyDisableDeviceAuth": true
+    },
+    "auth": {
+      "mode": "password",
+      "password": "${GATEWAY_PASSWORD}"
+    }
+  },
+  "session": {
+    "scope": "per-sender",
+    "reset": {
+      "mode": "idle",
+      "idleMinutes": 5
+    }
+  },
+  "models": {
+    "providers": {
+      "ilmuclaw": {
+        "baseUrl": "https://api.ilmu.ai/v1",
+        "apiKey": "${ILMUCLAW_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "nemo-super",
+            "name": "ILMU Nemo Super (Custom Provider)",
+            "contextWindow": 256000,
+            "maxTokens": 128000,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "reasoning": false
+          },
+          {
+            "id": "ilmu-nemo-nano",
+            "name": "ILMU Nemo Nano (Custom Provider)",
+            "contextWindow": 256000,
+            "maxTokens": 128000,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "reasoning": false
+          }
+        ]
+      },
+      "ytlailabs": {
+        "baseUrl": "${YTLAILAB_BASE_URL}",
+        "apiKey": "${YTLAILAB_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "ilmu-text-free-v2",
+            "name": "Ilmu Text",
+            "reasoning": true,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "ilmu-mini-free-v2",
+            "name": "Ilmu Mini",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 4096
+          },
+          {
+            "id": "ilmu-vision-v2",
+            "name": "Ilmu Vision",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 32000,
+            "maxTokens": 32000
+          }
+        ]
+      },
+      "ytlailabs-stg": {
+        "baseUrl": "http://caddy:8080/ytlailabs-stg/v1",
+        "apiKey": "${ILMUCLAW_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "ilmu-nemo-v3",
+            "name": "Ilmu Nemo",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 256000
+          },
+          {
+            "id": "ilmu-nemo-super-v1",
+            "name": "Ilmu Nemo Super",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 256000
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "imageModel": "ytlailabs/ilmu-vision-v2",
+      "model": {
+        "primary": "ilmuclaw/nemo-super",
+        "fallbacks": [
+          "ilmuclaw/ilmu-nemo-nano"
+        ]
+      },
+      "models": {
+        "ilmuclaw/nemo-super":              { "alias": "nemo-super", "params": { "thinking": "adaptive" } },
+        "ilmuclaw/ilmu-nemo-nano":          { "alias": "nemo-nano",  "params": { "thinking": "adaptive" } },
+        "ytlailabs/ilmu-text-free-v2":      { "alias": "text",       "params": { "thinking": "adaptive" } },
+        "ytlailabs/ilmu-mini-free-v2":      { "alias": "mini",       "params": { "thinking": "off" } },
+        "ytlailabs/ilmu-vision-v2":         { "alias": "vision",     "params": { "thinking": "adaptive" } }
+      },
+      "thinkingDefault": "off",
+      "bootstrapMaxChars": 40000
+    },
+    "list": [
+      {
+        "id": "triage-agent",
+        "default": true,
+        "name": "ILMUClaw Triage Agent",
+        "workspace": "~/.openclaw/workspace",
+        "tools": {
+          "allow": [
+            "read", "write", "edit", "exec",
+            "atlassian__jira_create_issue",
+            "atlassian__jira_add_comment",
+            "atlassian__jira_search",
+            "atlassian__jira_get_issue"
+          ],
+          "deny": ["browser", "canvas", "apply_patch", "cron", "sessions_spawn", "message"]
+        }
+      }
+    ]
+  },
+  "tools": {
+    "loopDetection": {
+      "enabled": true,
+      "historySize": 30,
+      "warningThreshold": 3,
+      "criticalThreshold": 4,
+      "globalCircuitBreakerThreshold": 5,
+      "detectors": {
+        "genericRepeat": true,
+        "knownPollNoProgress": true,
+        "pingPong": true
+      }
+    },
+    "media": {
+      "image": {
+        "enabled": true,
+        "maxChars": 5000,
+        "maxBytes": 10485760,
+        "timeoutSeconds": 60,
+        "models": [
+          {
+            "type": "provider",
+            "provider": "ytlailabs",
+            "model": "ilmu-vision-v2",
+            "capabilities": ["image"],
+            "prompt": "{{Body}}"
+          }
+        ]
+      }
+    }
+  }
+}
