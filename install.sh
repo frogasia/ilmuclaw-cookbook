@@ -48,6 +48,7 @@ OPENCLAW_INSTALL_URL="https://docs.openclaw.ai/install"
 readonly E_NO_OPENCLAW=10
 readonly E_NO_CURL=12
 readonly E_NO_TTY=14
+readonly E_UNSUPPORTED_OS=16
 readonly E_CONFIG_WRITE=20
 readonly E_ONBOARD_FAILED=22
 readonly E_DECLINED=30
@@ -112,6 +113,7 @@ Exit codes:
   10  E_NO_OPENCLAW      openclaw CLI not on PATH
   12  E_NO_CURL          curl not on PATH
   14  E_NO_TTY           workspace missing and no tty to ask for consent
+  16  E_UNSUPPORTED_OS   platform is not macOS, Linux, or a Windows bash shim
   20  E_CONFIG_WRITE     openclaw config/mcp set failed
   22  E_ONBOARD_FAILED   openclaw onboard failed
   30  E_DECLINED         user declined the onboarding consent prompt
@@ -181,8 +183,34 @@ ensure_onboarded() {
 # Preflight
 # ---------------------------------------------------------------------------
 
+# macOS + Linux (incl. WSL2) are fully supported. Git Bash / MSYS2 / Cygwin
+# can run most of the script but the /dev/tty consent read is fragile there,
+# so we warn and point at COOKBOOK_ACCEPT_RISK=1. Anything else exits early.
+detect_os() {
+  local kernel
+  kernel="$(uname -s 2>/dev/null || echo unknown)"
+  case "$kernel" in
+    Darwin|Linux)
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      warn "detected $kernel — Git Bash / MSYS2 / Cygwin is best-effort."
+      warn "  the consent prompt reads from /dev/tty which can misbehave here."
+      warn "  if the prompt hangs, rerun with COOKBOOK_ACCEPT_RISK=1."
+      warn "  for a fully-supported install on Windows, use WSL2."
+      ;;
+    *)
+      die "E_UNSUPPORTED_OS" "$E_UNSUPPORTED_OS" \
+        "unsupported platform: $kernel" \
+        "use macOS, Linux, or WSL2. native Windows is not supported — install WSL2 and rerun there" \
+        "${DOCS_URL}#platform-support"
+      ;;
+  esac
+}
+
 preflight() {
   log "preflight…"
+
+  detect_os
 
   command -v openclaw >/dev/null 2>&1 || die "E_NO_OPENCLAW" "$E_NO_OPENCLAW" \
     "openclaw CLI not found on PATH" \
