@@ -26,6 +26,9 @@ NO_PROGRESS_WARN, NO_PROGRESS_CRIT = 5, 10
 TOKEN_HOTSPOT_WARN, TOKEN_HOTSPOT_CRIT = 0.40, 0.60
 ERROR_STORM_WARN, ERROR_STORM_CRIT = 0.30, 0.50
 ERROR_STORM_MIN_N = 3
+SHORT_SEGMENT_MAX = 10
+SHORT_SEGMENT_REPEAT_MIN = 5
+AGGREGATE_MODEL = "*"
 
 
 def canonical_json(obj: Any) -> str:
@@ -56,6 +59,7 @@ class ToolEvent:
     is_error: bool
     assistant_input_tokens: int
     assistant_output_tokens: int
+    model: str = ""
 
 
 @dataclass
@@ -118,14 +122,26 @@ def parse_session(path: Path) -> Session:
             results_by_call[msg.get("toolCallId", "")] = msg
 
     # Walk in file order; emit one ToolEvent per toolCall block.
+    # Track the live model: assistant messages carry `msg["model"]` directly,
+    # but a `model_change` entry between assistant messages signals an
+    # imminent switch. We prefer the assistant message's own `model` (it's
+    # the model that actually ran the call) and fall back to the most
+    # recent `model_change` formatted as `provider/modelId` to match
+    # `_resolve_model`.
+    live_model = ""
     for e in entries:
-        if e.get("type") != "message":
+        et = e.get("type")
+        if et == "model_change":
+            live_model = f"{e.get('provider','')}/{e.get('modelId','')}"
+            continue
+        if et != "message":
             continue
         msg = e.get("message", {})
         if msg.get("role") != "assistant":
             continue
         usage = msg.get("usage") or {}
         _accumulate_tokens(sess.total_tokens, usage)
+        msg_model = msg.get("model") or live_model
         tool_calls = [b for b in (msg.get("content") or [])
                       if isinstance(b, dict) and b.get("type") == "toolCall"]
         if not tool_calls:
@@ -143,6 +159,7 @@ def parse_session(path: Path) -> Session:
                 is_error=bool(result.get("isError")) if result else False,
                 assistant_input_tokens=in_tok,
                 assistant_output_tokens=out_tok,
+                model=msg_model,
             ))
     return sess
 
@@ -189,7 +206,7 @@ def _hash_result(result: dict | None) -> str | None:
 
 # ---------- detectors ----------
 
-def detect_generic_repeat(sess: Session) -> list[dict]:
+def detect_generic_repeat(events: list[ToolEvent]) -> list[dict]:
     """Flag tools called repeatedly with identical arguments inside a sliding window.
 
     Catches the most common failure mode: an agent stuck re-running the same
@@ -204,7 +221,7 @@ def detect_generic_repeat(sess: Session) -> list[dict]:
     Cross-check with `no_progress_poll` to distinguish "looping" from "polling
     a moving target."
     """
-    events = sess.tool_events[-WINDOW:] if len(sess.tool_events) > WINDOW else sess.tool_events
+    events = events[-WINDOW:] if len(events) > WINDOW else events
     counts: dict[tuple[str, str], list[ToolEvent]] = {}
     for ev in events:
         counts.setdefault((ev.tool, ev.args_hash), []).append(ev)
@@ -229,7 +246,7 @@ def detect_generic_repeat(sess: Session) -> list[dict]:
     return out
 
 
-def detect_ping_pong(sess: Session) -> list[dict]:
+def detect_ping_pong(events: list[ToolEvent]) -> list[dict]:
     """Flag the longest A-B-A-B alternation in the recent window.
 
     Catches the second-most-common failure mode: an agent oscillating between
@@ -241,7 +258,7 @@ def detect_ping_pong(sess: Session) -> list[dict]:
     full cycles (8 calls), crit at 8 cycles (16 calls). Below 4 cycles the
     pattern is too noisy to call.
     """
-    events = sess.tool_events[-WINDOW:] if len(sess.tool_events) > WINDOW else sess.tool_events
+    events = events[-WINDOW:] if len(events) > WINDOW else events
     if len(events) < 4:
         return []
     seq = [ev.tool for ev in events]
@@ -280,7 +297,7 @@ def detect_ping_pong(sess: Session) -> list[dict]:
     }]
 
 
-def detect_no_progress_poll(sess: Session) -> list[dict]:
+def detect_no_progress_poll(events: list[ToolEvent]) -> list[dict]:
     """Flag identical (call, result) pairs — the agent learned nothing new.
 
     Stricter cousin of `generic_repeat`: only counts repeats where the result
@@ -293,7 +310,7 @@ def detect_no_progress_poll(sess: Session) -> list[dict]:
     yet written when the file was inspected, and image-only results (no
     meaningful text hash; per §6a, v1 limitation).
     """
-    events = [ev for ev in sess.tool_events if ev.result_hash is not None]
+    events = [ev for ev in events if ev.result_hash is not None]
     events = events[-WINDOW:] if len(events) > WINDOW else events
     counts: dict[tuple[str, str, str], list[ToolEvent]] = {}
     for ev in events:
@@ -319,7 +336,7 @@ def detect_no_progress_poll(sess: Session) -> list[dict]:
     return out
 
 
-def detect_token_hotspot(sess: Session, per_tool: dict) -> list[dict]:
+def detect_token_hotspot(events: list[ToolEvent], per_tool: dict) -> list[dict]:
     """Flag any single tool that consumes a disproportionate share of tokens.
 
     Whole-session view (no window) — answers "where did the budget go?" Useful
@@ -356,7 +373,7 @@ def detect_token_hotspot(sess: Session, per_tool: dict) -> list[dict]:
     return out
 
 
-def detect_error_storm(sess: Session, per_tool: dict) -> list[dict]:
+def detect_error_storm(events: list[ToolEvent], per_tool: dict) -> list[dict]:
     """Flag tools whose results are mostly errors (≥30% with n≥3).
 
     Catches "agent keeps trying the wrong shape" — wrong arguments, missing
@@ -393,14 +410,15 @@ def detect_error_storm(sess: Session, per_tool: dict) -> list[dict]:
     return out
 
 
-def per_tool_stats(sess: Session) -> dict:
+def per_tool_stats(events: list[ToolEvent]) -> dict:
     """Aggregate calls / errors / attributed tokens / share, keyed by tool name.
 
     Detector inputs and the `per_tool_stats` block in the JSON output share
     this same shape so what you read in the summary is what the detectors saw.
+    Accepts an event list directly so it can be reused on per-model slices.
     """
     stats: dict[str, dict] = {}
-    for ev in sess.tool_events:
+    for ev in events:
         s = stats.setdefault(ev.tool, {"calls": 0, "errors": 0, "tokens_attributed": 0, "token_share": 0.0})
         s["calls"] += 1
         if ev.is_error:
@@ -412,21 +430,160 @@ def per_tool_stats(sess: Session) -> dict:
     return stats
 
 
-def analyze(path: Path) -> dict:
-    """End-to-end: parse the JSONL, run all five detectors, return the report dict.
+def detect_short_segment_repeat(events: list[ToolEvent]) -> list[dict]:
+    """Flag tiny segments that are entirely identical calls.
 
-    The returned dict matches the JSON output schema documented in README.md and
-    Notion §6a. `signals` is empty when nothing fired — a healthy session.
+    Captures the "few rounds of retrying then gave up and switched model"
+    pattern: a 6-event segment with 6 identical calls won't trip
+    `generic_repeat`'s WARN=10 threshold, but it's the exact behaviour we
+    want surfaced when looking at per-model segments.
+
+    Fires only when:
+      - segment is short (len <= SHORT_SEGMENT_MAX)
+      - every event in the segment shares the same (tool, args_hash)
+      - count >= SHORT_SEGMENT_REPEAT_MIN
+    Severity is always `warning` — short-segment evidence is suggestive,
+    not conclusive.
+    """
+    n = len(events)
+    if n < SHORT_SEGMENT_REPEAT_MIN or n > SHORT_SEGMENT_MAX:
+        return []
+    first = (events[0].tool, events[0].args_hash)
+    if not all((ev.tool, ev.args_hash) == first for ev in events):
+        return []
+    return [{
+        "type": "short_segment_repeat",
+        "severity": "warning",
+        "tool": first[0],
+        "count": n,
+        "window_start_id": events[0].entry_id,
+        "window_end_id": events[-1].entry_id,
+        "detail": {"segment_length": n},
+    }]
+
+
+def model_segments(events: list[ToolEvent]) -> list[list[ToolEvent]]:
+    """Split events into contiguous same-model runs.
+
+    A→B→A produces three segments, not two. This matters because window
+    detectors are time-local: a loop in the first A-segment must not be
+    diluted by a clean later A-segment.
+    """
+    if not events:
+        return []
+    segs: list[list[ToolEvent]] = []
+    cur = [events[0]]
+    for ev in events[1:]:
+        if ev.model == cur[-1].model:
+            cur.append(ev)
+        else:
+            segs.append(cur)
+            cur = [ev]
+    segs.append(cur)
+    return segs
+
+
+def group_by_model(events: list[ToolEvent]) -> dict[str, list[ToolEvent]]:
+    """Bucket events by model, preserving file order within each bucket.
+
+    Used for whole-session detectors (`token_hotspot`, `error_storm`) where
+    "tool X errored 60% on model A" is a model-level fact independent of
+    when the calls happened.
+    """
+    out: dict[str, list[ToolEvent]] = {}
+    for ev in events:
+        out.setdefault(ev.model, []).append(ev)
+    return out
+
+
+def models_used_sequence(events: list[ToolEvent]) -> list[str]:
+    """Contiguously-deduped model sequence in entry order.
+
+    A→A→B→B→A becomes ["A","B","A"] — the switch sequence consumers care
+    about, not just the unique set.
+    """
+    out: list[str] = []
+    for ev in events:
+        if not out or out[-1] != ev.model:
+            out.append(ev.model)
+    return out
+
+
+def per_model_stats(events: list[ToolEvent]) -> dict:
+    """Per-model rollup: tool calls, attributed tokens, errors, segments."""
+    stats: dict[str, dict] = {}
+    for ev in events:
+        s = stats.setdefault(ev.model, {
+            "tool_calls": 0, "tokens_attributed": 0, "errors": 0, "segments": 0,
+        })
+        s["tool_calls"] += 1
+        s["tokens_attributed"] += ev.assistant_input_tokens + ev.assistant_output_tokens
+        if ev.is_error:
+            s["errors"] += 1
+    # Count contiguous segments per model.
+    for seg in model_segments(events):
+        m = seg[0].model
+        if m in stats:
+            stats[m]["segments"] += 1
+    return stats
+
+
+def analyze(path: Path) -> dict:
+    """End-to-end: parse the JSONL, run all detectors, return the report dict.
+
+    Window-based detectors (generic_repeat, ping_pong, no_progress_poll,
+    short_segment_repeat) run per contiguous model-segment so a loop on
+    model A is never diluted by a clean run on model B that follows.
+
+    Whole-session detectors (token_hotspot, error_storm) run per model
+    group (all events for a given model) and additionally once across the
+    whole session tagged `model="*"`, so consumers that don't yet read the
+    `model` field still see aggregate signals.
+
+    `signals` is empty when nothing fired — a healthy session.
     """
     sess = parse_session(path)
-    per_tool = per_tool_stats(sess)
-    signals = (
-        detect_generic_repeat(sess)
-        + detect_ping_pong(sess)
-        + detect_no_progress_poll(sess)
-        + detect_token_hotspot(sess, per_tool)
-        + detect_error_storm(sess, per_tool)
-    )
+    events = sess.tool_events
+    per_tool = per_tool_stats(events)
+
+    signals: list[dict] = []
+
+    # Window-based detectors: per segment.
+    for idx, seg in enumerate(model_segments(events)):
+        seg_model = seg[0].model if seg else ""
+        for sig in (
+            detect_generic_repeat(seg)
+            + detect_ping_pong(seg)
+            + detect_no_progress_poll(seg)
+            + detect_short_segment_repeat(seg)
+        ):
+            sig["model"] = seg_model
+            sig["segment_index"] = idx
+            signals.append(sig)
+
+    # Whole-session detectors: per model group. When the session is
+    # single-model, the per-model bucket equals the whole session, so we
+    # tag the signal with `model="*"` to match the back-compat aggregate
+    # shape consumers expect — and skip a redundant second pass.
+    by_model = group_by_model(events)
+    single_model = len(by_model) <= 1
+    for model, bucket in by_model.items():
+        bucket_per_tool = per_tool_stats(bucket)
+        sig_model = AGGREGATE_MODEL if single_model else model
+        for sig in (
+            detect_token_hotspot(bucket, bucket_per_tool)
+            + detect_error_storm(bucket, bucket_per_tool)
+        ):
+            sig["model"] = sig_model
+            signals.append(sig)
+    if not single_model:
+        for sig in (
+            detect_token_hotspot(events, per_tool)
+            + detect_error_storm(events, per_tool)
+        ):
+            sig["model"] = AGGREGATE_MODEL
+            signals.append(sig)
+
     turn_count = sum(
         1 for e in sess.entries
         if e.get("type") == "message" and (e.get("message") or {}).get("role") == "assistant"
@@ -435,10 +592,12 @@ def analyze(path: Path) -> dict:
         "session_id": sess.session_id,
         "agent_id": sess.agent_id,
         "model": sess.model,
+        "models_used": models_used_sequence(events),
         "turn_count": turn_count,
-        "tool_call_count": len(sess.tool_events),
+        "tool_call_count": len(events),
         "total_tokens": sess.total_tokens,
         "per_tool_stats": per_tool,
+        "per_model_stats": per_model_stats(events),
         "signals": signals,
     }
 
@@ -453,7 +612,12 @@ def render_text(report: dict) -> str:
     lines = []
     lines.append(f"session  {report['session_id']}")
     lines.append(f"agent    {report['agent_id'] or '<unknown>'}")
-    lines.append(f"model    {report['model'] or '<unknown>'}")
+    models_used = report.get("models_used") or []
+    multi_model = len(set(models_used)) > 1
+    if multi_model:
+        lines.append(f"models   {' → '.join(models_used)}")
+    else:
+        lines.append(f"model    {report['model'] or '<unknown>'}")
     lines.append(f"turns    {report['turn_count']}    tool calls {report['tool_call_count']}")
     t = report["total_tokens"]
     lines.append(
@@ -468,6 +632,17 @@ def render_text(report: dict) -> str:
             f"  {tool:<32} calls={s['calls']:<4} errors={s['errors']:<3} "
             f"tokens={s['tokens_attributed']:<8} share={s['token_share']:.0%}"
         )
+    if multi_model:
+        lines.append("")
+        lines.append("per-model")
+        for model, s in sorted(
+            report.get("per_model_stats", {}).items(),
+            key=lambda kv: -kv[1]["tool_calls"],
+        ):
+            lines.append(
+                f"  {model:<32} calls={s['tool_calls']:<4} errors={s['errors']:<3} "
+                f"tokens={s['tokens_attributed']:<8} segments={s['segments']}"
+            )
     lines.append("")
     sigs = report["signals"]
     lines.append(f"signals ({len(sigs)})")
@@ -477,8 +652,13 @@ def render_text(report: dict) -> str:
         tool = sig["tool"]
         if isinstance(tool, list):
             tool = "↔".join(tool)
+        model_tag = (
+            f" model={sig['model']}"
+            if multi_model and sig.get("model") and sig["model"] != AGGREGATE_MODEL
+            else ""
+        )
         lines.append(
-            f"  [{sig['severity']:<8}] {sig['type']:<18} tool={tool} "
+            f"  [{sig['severity']:<8}] {sig['type']:<22} tool={tool}{model_tag} "
             f"count={sig['count']} detail={sig['detail']}"
         )
     return "\n".join(lines)
@@ -495,11 +675,16 @@ and prints either a short human-readable summary (default) or a JSON report
 suitable for piping into other tooling.
 
 Detectors (warn / crit thresholds in parentheses):
-  generic_repeat    same tool + same args, sliding window of 30   (10 / 20)
-  ping_pong         A-B-A-B alternation, sliding window of 30     (4 cycles / 8)
-  no_progress_poll  same call + same result hash                  (5 / 10)
-  token_hotspot     one tool dominates input+output token share   (40% / 60%)
-  error_storm       isError:true rate for one tool, n>=3          (30% / 50%)
+  generic_repeat        same tool + same args, sliding window of 30   (10 / 20)
+  ping_pong             A-B-A-B alternation, sliding window of 30     (4 cycles / 8)
+  no_progress_poll      same call + same result hash                  (5 / 10)
+  short_segment_repeat  tiny model-segment that is entirely identical (warn at 5)
+  token_hotspot         one tool dominates input+output token share   (40% / 60%)
+  error_storm           isError:true rate for one tool, n>=3          (30% / 50%)
+
+Window-based detectors run per contiguous model-segment; whole-session
+detectors (token_hotspot, error_storm) run per model and aggregate. Every
+signal carries a `model` field ("*" = whole-session aggregate).
 
 Sessions live at:  ~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl
 Pass the full path so <agentId> can be derived from it.

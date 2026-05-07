@@ -59,6 +59,10 @@ signals (3)
   [warning ] token_hotspot      tool=read count=14 detail={'share': 0.573, ...}
 ```
 
+For multi-model sessions, the `model` line becomes `models  A → B → A`, a
+`per-model` table block is added under `per-tool`, and signal lines include
+`model=<name>` (omitted when the signal is the back-compat `*` aggregate).
+
 JSON (for piping into other tooling):
 
 ```json
@@ -66,17 +70,23 @@ JSON (for piping into other tooling):
   "session_id": "...",
   "agent_id": "...",
   "model": "...",
+  "models_used": ["modelA", "modelB", "modelA"],
   "turn_count": 28,
   "tool_call_count": 24,
   "total_tokens": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
   "per_tool_stats": {
     "<toolName>": { "calls": 0, "errors": 0, "tokens_attributed": 0, "token_share": 0.0 }
   },
+  "per_model_stats": {
+    "<model>": { "tool_calls": 0, "tokens_attributed": 0, "errors": 0, "segments": 0 }
+  },
   "signals": [
     {
-      "type": "generic_repeat|ping_pong|no_progress_poll|token_hotspot|error_storm",
+      "type": "generic_repeat|ping_pong|no_progress_poll|short_segment_repeat|token_hotspot|error_storm",
       "severity": "warning|critical",
       "tool": "<toolName>",
+      "model": "<model>|*",
+      "segment_index": 0,
       "count": 0,
       "window_start_id": "...",
       "window_end_id": "...",
@@ -86,19 +96,34 @@ JSON (for piping into other tooling):
 }
 ```
 
+`models_used` is the contiguously-deduped switch sequence (so A→B→A appears as
+`["A","B","A"]`, not just the unique set). Every signal carries a `model` field;
+`"*"` means a back-compat aggregate that ignored model boundaries. Window-based
+signals also carry `segment_index` (0-based, in entry order).
+
 ## Detectors
 
 | Detector | Rule | Window | Warn / Crit |
 |---|---|---|---|
-| `generic_repeat`   | Same tool, same args | last 30 calls | 10 / 20 |
-| `ping_pong`        | Alternating A-B-A-B  | last 30 calls | 4 cycles / 8 cycles |
-| `no_progress_poll` | Same call, same result | last 30 (call,result) pairs | 5 / 10 |
-| `token_hotspot`    | One tool dominates input+output token share | whole session | 40% / 60% |
-| `error_storm`      | High `isError:true` rate (n≥3) | whole session | 30% / 50% |
+| `generic_repeat`       | Same tool, same args | per-segment, last 30 calls | 10 / 20 |
+| `ping_pong`            | Alternating A-B-A-B  | per-segment, last 30 calls | 4 cycles / 8 cycles |
+| `no_progress_poll`     | Same call, same result | per-segment, last 30 (call,result) pairs | 5 / 10 |
+| `short_segment_repeat` | Tiny segment, all identical calls | per-segment, ≤10 events | warn at 5 |
+| `token_hotspot`        | One tool dominates input+output token share | per-model + aggregate | 40% / 60% |
+| `error_storm`          | High `isError:true` rate (n≥3) | per-model + aggregate | 30% / 50% |
+
+Window-based detectors run **per contiguous model-segment** so a loop on
+model A is never diluted by a clean run on model B that follows. Whole-session
+detectors run **per model group** (precise attribution) and additionally once
+across the whole session tagged `model="*"` (back-compat aggregate). Single-model
+sessions only emit the aggregate to avoid duplicate signals.
 
 Thresholds mirror the `tools.loopDetection` defaults documented for OpenClaw
 (`historySize=30`, `warningThreshold=10`, `criticalThreshold=20`) plus the cycle /
-share / rate variants the live runtime backstop does not expose.
+share / rate variants the live runtime backstop does not expose. The
+`short_segment_repeat` detector has no runtime equivalent — it captures the
+"few rounds of retrying then gave up and switched model" pattern that the
+WARN=10 threshold misses on short segments.
 
 ## Tests
 
